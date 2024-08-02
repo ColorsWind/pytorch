@@ -1417,6 +1417,10 @@ class GuardBuilder(GuardBuilderBase):
             )
         else:
             np_types = ()
+
+        from torch.distributed._tensor.placement_types import _Partial, Replicate, Shard
+        from torch.distributed.device_mesh import DeviceMesh
+
         ok_types = tuple(
             common_constant_types
             | {
@@ -1428,6 +1432,10 @@ class GuardBuilder(GuardBuilderBase):
                 slice,
                 range,
                 torch.Size,
+                Shard,
+                Replicate,
+                _Partial,
+                DeviceMesh,
                 *np_types,
             }
         )
@@ -2382,6 +2390,16 @@ class CheckFunctionManager:
                 "dynamo_guards", payload_fn=lambda: [f() for f in structured_guard_fns]
             )
 
+        import torch.distributed.distributed_c10d as c10d
+
+        # Need to make sure the Placement/DeviceMesh argument imports are imported
+        # in the guard code, since the equality check we use requires running the constructor.
+        # Alternative: don't use an equality check, and manually add guards on type + inner data?
+        from torch.distributed._tensor.placement_types import _Partial, Replicate, Shard
+        from torch.distributed.device_mesh import DeviceMesh
+
+        RedOpType = c10d.ReduceOp.RedOpType
+
         global_state = convert_frame.initial_global_state
         if global_state is None:
             # we should only hit this case in NopTests()
@@ -2391,6 +2409,11 @@ class CheckFunctionManager:
             "___check_tensors_verbose": check_tensors_verbose_fn,
             "___check_global_state": global_state.check,
             "tensor_check_names": tensor_check_names,
+            "Shard": Shard,
+            "Replicate": Replicate,
+            "_Partial": _Partial,
+            "DeviceMesh": DeviceMesh,
+            "RedOpType": RedOpType,
             **SYMPY_INTERP,
             **CLOSURE_VARS,
         }
