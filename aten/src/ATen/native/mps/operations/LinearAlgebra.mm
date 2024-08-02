@@ -17,10 +17,15 @@
 #include <ATen/ops/addr_native.h>
 #include <ATen/ops/baddbmm_native.h>
 #include <ATen/ops/bmm_native.h>
+#include <ATen/ops/ones_like.h>
 #include <ATen/ops/linalg_lu_factor_native.h>
 #include <ATen/ops/linalg_solve_triangular_native.h>
 #include <ATen/ops/mm_native.h>
 #include <ATen/ops/stack.h>
+#include <ATen/ops/multiply.h>
+#include <ATen/ops/eq.h>
+#include <ATen/ops/where.h>
+#include <ATen/ops/concatenate_native.h>
 #include <ATen/ops/triangular_solve_native.h>
 #include <ATen/ops/_cholesky_solve_helper_native.h>
 #include <ATen/native/BatchLinearAlgebra.h>
@@ -577,10 +582,21 @@ static void cholesky_kernel_mps(const Tensor& A,
   at::native::squareCheckInputs(A, "linalg.cholesky");
   TORCH_CHECK(!A.is_complex(), "linalg.cholesky; Not supported for complex yet!");
 
+  uint64_t batchSize = A.sizes().size() > 2 ? A.size(0) : 1;
+
   Tensor result = at::empty_like(A, A.options()); 
 
+  //Need to get one status per input to store the code.
+  //initialize buffers here
+  std::vector<Tensor> statusTensorsVector = {};
+  for (const auto i : c10::irange(batchSize)){
+      auto stat = at::zeros({1}, status.options());
+      statusTensorsVector.push_back(stat);
+  }
+
+
+
   id<MTLBuffer> aBuffer = getMTLBufferStorage(A);
-  id<MTLBuffer> statusBuffer = getMTLBufferStorage(status);
   id<MTLBuffer> resultBuffer = getMTLBufferStorage(result);
   MPSStream* mpsStream = getCurrentMPSStream();
   id<MTLDevice> device = MPSDevice::getInstance()->device();
@@ -589,7 +605,6 @@ static void cholesky_kernel_mps(const Tensor& A,
     @autoreleasepool {
       mpsStream->endKernelCoalescing();
       id<MTLCommandBuffer> commandBuffer = mpsStream->commandBuffer();
-      uint64_t batchSize = A.size(0);
       uint64_t aRows = A.size(-2);
       uint64_t aCols = A.size(-1);
       uint64_t aElemSize = A.element_size();
@@ -622,35 +637,32 @@ static void cholesky_kernel_mps(const Tensor& A,
                                     descriptor:sourceMatrixDesc] autorelease];
 
         MPSMatrix* resultMatrix =
-            [[[MPSMatrix alloc] initWithBuffer:aBuffer
-                                    offset:(A.storage_offset() + batchOffset) * aElemSize
-                                    descriptor:sourceMatrixDesc] autorelease];
-//        MPSMatrix* resultMatrix =
-//            [[[MPSMatrix alloc] initWithBuffer:resultBuffer
-//                                    offset:(result.storage_offset() + batchOffset) * aElemSize
-//                                    descriptor:resultMatrixDesc] autorelease];
-
+            [[[MPSMatrix alloc] initWithBuffer:resultBuffer
+                                    offset:(result.storage_offset() + batchOffset) * aElemSize
+                                    descriptor:resultMatrixDesc] autorelease];
 
         [decomposition encodeToCommandBuffer:commandBuffer
                                 sourceMatrix:sourceMatrix
                                 resultMatrix:resultMatrix
-                                      status:statusBuffer];
+                                      status:getMTLBufferStorage(statusTensorsVector[i])];
       }
       getMPSProfiler().endProfileKernel(decomposition);
     }
   });
 
-  //This seems a bit dumb. How to do this the same dispatch of MPS kernels instead?
-  Tensor A_;
   if(upper) {
-    A_ = A.triu();
+    result = result.triu();
   } else {
-    A_ = A.tril();
+    result = result.tril();
   }
+  A.copy_(result);
 
-  A.copy_(A_);
-  Tensor zero = at::zeros_like(status, status.options()); 
-  status.copy_(zero);
+  //Convert the status values to the format expected by pytorch
+  auto statusTensor = concatenate(ArrayRef<Tensor>(statusTensorsVector), 0);
+  auto t = at::multiply(at::ones_like(status,status.options()), -3);
+  auto cond = at::eq(statusTensor, t);
+  statusTensor = at::where(cond, at::ones_like(statusTensor, status.options()), statusTensor);
+  status.copy_(statusTensor);
 }
 
 REGISTER_DISPATCH(cholesky_stub, &cholesky_kernel_mps);
