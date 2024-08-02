@@ -1,3 +1,4 @@
+# mypy: allow-untyped-decorators
 # mypy: allow-untyped-defs
 import logging
 import operator
@@ -254,19 +255,21 @@ def insert_deferred_runtime_asserts(
             ):
 
                 def match_symbol(symint, cb):
-                    if (
-                        isinstance(symint, torch.SymInt)
-                        and isinstance(symint.node, SymNode)
+                    if isinstance(symint, torch.SymInt) and isinstance(
+                        symint.node, SymNode
                     ):
                         s = symint.node.expr
-                        if isinstance(s, sympy.Symbol) and s not in expr_to_proxy:  # basic symbol
+                        if (
+                            isinstance(s, sympy.Symbol) and s not in expr_to_proxy
+                        ):  # basic symbol
                             expr_to_proxy[s] = fx.Proxy(cb())
                             log.debug("expr_to_proxy[%s] = %s", s, expr_to_proxy[s])
                         elif (
                             isinstance(s, sympy.Expr)
                             and shape_env.prefer_deferred_runtime_asserts_over_guards
                             and s in replacement_expr_to_symbol
-                            and (_s := replacement_expr_to_symbol[s]) not in expr_to_proxy
+                            and (_s := replacement_expr_to_symbol[s])
+                            not in expr_to_proxy
                         ):  # symbol replaced with expression
                             # if we've set a replacement, e.g. s2 = s0*s1, s0*s1 shows up as the shape,
                             # so we store expr_to_proxy[s2] = cb(), and we're able to reify the assert.
