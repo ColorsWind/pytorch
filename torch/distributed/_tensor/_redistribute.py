@@ -286,7 +286,11 @@ class Redistribute(torch.autograd.Function):
             # use the same local tensor if placements are the same.
             output = input._local_tensor
             target_spec = current_spec
-
+        target_spec.tensor_meta = TensorMeta(
+            target_spec.shape,
+            output.stride(),
+            target_spec.tensor_meta.dtype
+        )
         return dtensor.DTensor(
             output,
             target_spec,
